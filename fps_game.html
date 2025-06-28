@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Complete FPS Game</title>
+  <style>
+    body { margin:0; overflow:hidden; background:#000; }
+    canvas { display:block; }
+    #crosshair {
+      position:absolute; top:50%; left:50%;
+      transform:translate(-50%,-50%);
+      font-size:24px; color:lime; pointer-events:none;
+    }
+    #ui {
+      position:absolute; top:10px; left:10px;
+      color:white; font-family:sans-serif; font-size:16px;
+    }
+    #menu {
+      position:absolute; top:10px; right:10px;
+    }
+    #menu button { margin:2px; padding:5px 10px; }
+    #gameOver {
+      position:absolute; top:50%; left:50%;
+      transform:translate(-50%,-50%);
+      color:red; font-size:36px; display:none;
+      text-align:center;
+    }
+  </style>
+</head>
+<body>
+  <div id="crosshair">+</div>
+  <div id="ui">Score: 0 | Health: 100 | Ammo: 10/30 | Coins: 0 | Weapon: Pistol</div>
+  <div id="menu">
+    <button onclick="togglePause()">Play/Pause</button>
+    <button onclick="buyWeapon('SMG')">Buy SMG (300)</button>
+    <button onclick="buyWeapon('Rifle')">Buy Rifle (500)</button>
+    <button onclick="exitGame()">Exit</button>
+  </div>
+  <div id="gameOver">GAME OVER<br>Click to Restart</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    let scene, camera, renderer, enemies=[], powerups=[];
+    let moveF=false, moveB=false, moveL=false, moveR=false;
+    let yaw=0, pitch=0, paused=false, over=false;
+    let score=0, health=100, ammo=10, reserve=30, coins=0, weapon='Pistol';
+    const ui = document.getElementById('ui');
+    const overDiv = document.getElementById('gameOver');
+    let shootSound, pickupSound;
+
+    function startGame() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87ceeb);
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+      camera.position.y=1.6;
+
+      renderer = new THREE.WebGLRenderer();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      scene.add(new THREE.HemisphereLight(0xffffff,0x444444,1));
+
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.MeshLambertMaterial({color:0x228B22}));
+      ground.rotation.x=-Math.PI/2; scene.add(ground);
+
+      // Walls
+      const wallGeo = new THREE.BoxGeometry(100,5,1);
+      const wallMat = new THREE.MeshLambertMaterial({color:0x8B4513});
+      [[0,2.5,-50],[0,2.5,50],[50,2.5,0],[-50,2.5,0]].forEach((p,i)=>{
+        let w = new THREE.Mesh(wallGeo, wallMat);
+        w.position.set(p[0],p[1],p[2]);
+        if(i>1)w.rotation.y=Math.PI/2;
+        scene.add(w);
+      });
+
+      // Gun
+      const gun = new THREE.Mesh(new THREE.BoxGeometry(0.2,0.1,0.5), new THREE.MeshLambertMaterial({color:0x333333}));
+      gun.position.set(0.3,-0.2,-0.5);
+      camera.add(gun); scene.add(camera);
+
+      // Sounds
+      const listener = new THREE.AudioListener(); camera.add(listener);
+      shootSound = new THREE.Audio(listener);
+      pickupSound = new THREE.Audio(listener);
+      new THREE.AudioLoader().load('https://threejs.org/examples/sounds/shot.wav', b=>shootSound.setBuffer(b).setVolume(0.5));
+      new THREE.AudioLoader().load('https://threejs.org/examples/sounds/pickup.wav', b=>pickupSound.setBuffer(b).setVolume(0.5));
+
+      for(let i=0;i<3;i++) spawnEnemy();
+
+      updateUI(); animate();
+    }
+
+    function spawnEnemy() {
+      const group = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,1.5,12), new THREE.MeshLambertMaterial({color:0xff0000}));
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.3,8,8), new THREE.MeshLambertMaterial({color:0xffaaaa}));
+      body.position.y=0.75; head.position.y=1.6;
+      group.add(body); group.add(head);
+      group.position.set((Math.random()-0.5)*80,0,(Math.random()-0.5)*80);
+      group.userData={health:50,head:head};
+      scene.add(group);
+      enemies.push(group);
+    }
+
+    function spawnPowerup(type,pos) {
+      const geo = type==='ammo'?new THREE.BoxGeometry(0.3,0.3,0.3):new THREE.SphereGeometry(0.2,8,8);
+      const mat = new THREE.MeshLambertMaterial({color:type==='ammo'?0xffff00:0x00ffff});
+      const p = new THREE.Mesh(geo, mat);
+      p.position.copy(pos); p.userData={type:type};
+      scene.add(p); powerups.push(p);
+    }
+
+    function shoot() {
+      if(ammo<=0)return;
+      ammo--;
+      if(shootSound.isPlaying) shootSound.stop(); shootSound.play();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(0,0),camera);
+      const hits = ray.intersectObjects(enemies.flatMap(e=>e.children));
+      if(hits.length>0){
+        const obj = hits[0].object;
+        const enemy = enemies.find(e=>e.children.includes(obj));
+        if(obj===enemy.userData.head){
+          killEnemy(enemy,true);
+        } else {
+          enemy.userData.health-=weapon==='Pistol'?25:weapon==='SMG'?15:40;
+          if(enemy.userData.health<=0) killEnemy(enemy);
+        }
+      }
+      updateUI();
+    }
+
+    function killEnemy(enemy,headshot=false){
+      scene.remove(enemy); enemies.splice(enemies.indexOf(enemy),1);
+      score+=headshot?150:100; coins+=100;
+      if(Math.random()<0.5) spawnPowerup('ammo',enemy.position.clone());
+      else spawnPowerup('health',enemy.position.clone());
+      spawnEnemy(); updateUI();
+    }
+
+    function collectPowerups(){
+      powerups.forEach(p=>{
+        if(p.position.distanceTo(camera.position)<1){
+          if(p.userData.type==='ammo'){
+            reserve+=10;
+          } else {
+            health=Math.min(100,health+20);
+          }
+          if(pickupSound.isPlaying) pickupSound.stop(); pickupSound.play();
+          scene.remove(p);
+        }
+      });
+      powerups=powerups.filter(p=>scene.children.includes(p));
+    }
+
+    function updateUI(){
+      ui.innerHTML=`Score: ${score} | Health: ${Math.max(0,Math.round(health))} | Ammo: ${ammo}/${reserve} | Coins: ${coins} | Weapon: ${weapon}`;
+    }
+
+    function reload(){
+      const needed=10-ammo, take=Math.min(needed,reserve);
+      ammo+=take; reserve-=take; updateUI();
+    }
+
+    function buyWeapon(type){
+      if(type==='SMG'&&coins>=300){weapon='SMG';coins-=300;}
+      else if(type==='Rifle'&&coins>=500){weapon='Rifle';coins-=500;}
+      updateUI();
+    }
+
+    function togglePause(){paused=!paused;if(!paused)animate();}
+    function exitGame(){location.reload();}
+    function endGame(){over=true;overDiv.style.display='block';document.exitPointerLock();}
+    function restartGame(){
+      over=false;overDiv.style.display='none';
+      score=0;health=100;ammo=10;reserve=30;coins=0;weapon='Pistol';
+      enemies.forEach(e=>scene.remove(e));enemies=[];
+      powerups.forEach(p=>scene.remove(p));powerups=[];
+      for(let i=0;i<3;i++)spawnEnemy();updateUI();animate();
+      document.body.requestPointerLock();
+    }
+
+    function animate(){
+      requestAnimationFrame(animate);
+      if(paused||over)return;
+
+      const dir=new THREE.Vector3();
+      if(moveF)dir.z-=1;if(moveB)dir.z+=1;
+      if(moveL)dir.x-=1;if(moveR)dir.x+=1;
+      dir.normalize().applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
+      camera.position.add(dir.multiplyScalar(0.1));
+
+      enemies.forEach(e=>{
+        const toPlayer=camera.position.clone().sub(e.position);toPlayer.y=0;toPlayer.normalize();
+        e.position.add(toPlayer.multiplyScalar(0.02));
+        if(e.position.distanceTo(camera.position)<1.5){
+          health-=0.1;updateUI();
+          if(health<=0)endGame();
+        }
+      });
+
+      collectPowerups();
+      renderer.render(scene,camera);
+    }
+
+    // Controls
+    document.addEventListener('keydown',e=>{
+      if(over)return;
+      if(e.code==='KeyW')moveF=true;
+      if(e.code==='KeyS')moveB=true;
+      if(e.code==='KeyA')moveL=true;
+      if(e.code==='KeyD')moveR=true;
+      if(e.code==='KeyR')reload();
+    });
+    document.addEventListener('keyup',e=>{
+      if(e.code==='KeyW')moveF=false;
+      if(e.code==='KeyS')moveB=false;
+      if(e.code==='KeyA')moveL=false;
+      if(e.code==='KeyD')moveR=false;
+    });
+    document.addEventListener('click',()=>{
+      if(!over)document.body.requestPointerLock();
+      else restartGame();
+    });
+    document.addEventListener('mousedown',e=>{
+      if(e.button===0&&document.pointerLockElement===document.body&&!paused)shoot();
+    });
+    document.addEventListener('mousemove',e=>{
+      if(document.pointerLockElement===document.body&&!paused){
+        yaw-=e.movementX*0.002; pitch-=e.movementY*0.002;
+        pitch=Math.max(-Math.PI/2,Math.min(Math.PI/2,pitch));
+        camera.rotation.set(pitch,yaw,0);
+      }
+    });
+    window.addEventListener('resize',()=>{
+      camera.aspect=window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth,window.innerHeight);
+    });
+
+    startGame();
+  </script>
+</body>
+</html>
